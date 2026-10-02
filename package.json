@@ -28,11 +28,17 @@
       "types": "./dist/config.d.ts",
       "import": "./dist/config.js"
     },
+    "./server": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
     "./package.json": "./package.json"
   },
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "index.js",
+    "index.d.ts",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
