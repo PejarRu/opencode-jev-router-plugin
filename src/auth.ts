@@ -1,50 +1,96 @@
-import fs from "node:fs/promises"
-import { homedir } from "node:os"
-import path from "node:path"
+import { readFile } from "node:fs/promises"
+import { authFile, type Env } from "./paths.ts"
 
-export const AUTH_FILE_LOCATION = path.join(homedir(), ".local", "share", "opencode", "auth.json")
+export interface CredentialSource {
+    readonly name: string
+    read(): Promise<string | undefined>
+}
 
-type OpenCodeAuth = Record<
-    string,
-    {
-        type: "api"
-        key: string
+export interface ResolvedKey {
+    key: string
+    source: string
+}
+
+/** First non-empty key wins. A failing source is reported and skipped. */
+export async function resolveApiKey(
+    sources: readonly CredentialSource[],
+    onError: (source: string, error: unknown) => void = () => {},
+): Promise<ResolvedKey | undefined> {
+    for (const source of sources) {
+        try {
+            const key = (await source.read())?.trim()
+            if (key) {
+                return { key, source: source.name }
+            }
+        } catch (error) {
+            onError(source.name, error)
+        }
     }
->
+    return undefined
+}
 
-/**
- * Read the API key OpenCode stored for a provider.
- * Missing file, unparsable JSON, or non-API credentials return `undefined`.
- */
-export async function getApiAuthFromProvider(
-    providerId: string,
-    authFile: string = AUTH_FILE_LOCATION,
+export function envSource(name = "JEV_ROUTER_API_KEY", env: Env = process.env): CredentialSource {
+    return { name: `env:${name}`, read: async () => env[name] }
+}
+
+/** Structural subset of `ctx.integration.connection`. */
+export interface IntegrationConnections<C> {
+    active(integrationID: string): Promise<C | undefined>
+    resolve(connection: C): Promise<unknown>
+}
+
+export function keyFromCredential(value: unknown): string | undefined {
+    if (typeof value !== "object" || value === null) {
+        return undefined
+    }
+    const { type, key } = value as { type?: unknown; key?: unknown }
+    return (type === "key" || type === "api") && typeof key === "string" ? key : undefined
+}
+
+export function integrationSource<C>(
+    connections: IntegrationConnections<C>,
+    integrationID: string,
+): CredentialSource {
+    return {
+        name: `integration:${integrationID}`,
+        async read() {
+            const connection = await connections.active(integrationID)
+            if (connection === undefined) {
+                return undefined
+            }
+            return keyFromCredential(await connections.resolve(connection))
+        },
+    }
+}
+
+export async function readAuthFile(
+    providerID: string,
+    file: string = authFile(),
 ): Promise<string | undefined> {
     let raw: string
-
     try {
-        raw = await fs.readFile(authFile, { encoding: "utf8" })
-    } catch {
-        return undefined
+        raw = await readFile(file, "utf8")
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return undefined
+        }
+        throw error
     }
-
-    let auth: OpenCodeAuth
-
+    let parsed: unknown
     try {
-        auth = JSON.parse(raw) as OpenCodeAuth
+        parsed = JSON.parse(raw)
     } catch {
+        // Never surface the native SyntaxError: V8 embeds a fragment of the
+        // file content (potentially the API key) in its message, and the
+        // credential chain logs it.
+        throw new Error(`${file} is not valid JSON`)
+    }
+    if (typeof parsed !== "object" || parsed === null) {
         return undefined
     }
+    return keyFromCredential((parsed as Record<string, unknown>)[providerID])
+}
 
-    if (!auth || typeof auth !== "object") {
-        return undefined
-    }
-
-    const providerAuth = auth[providerId]
-
-    if (providerAuth?.type === "api") {
-        return providerAuth.key
-    }
-
-    return undefined
+export function authFileSource(providerID: string, file: string = authFile()): CredentialSource {
+    return { name: `auth.json:${providerID}`, read: () => readAuthFile(providerID, file) }
 }

@@ -1,54 +1,92 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { existsSync, readFileSync, rmSync } from "node:fs"
-import { DEFAULT_LOG_FILE, initLogger } from "../src/logger.ts"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { initLogger, noopLogger, serializeArg } from "../src/logger.ts"
 
-const testLogFile = "/tmp/opencode/jev-router-test/logger/test.log"
+let dir: string
 
-beforeAll(() => {
-    rmSync("/tmp/opencode/jev-router-test/logger", { recursive: true, force: true })
+beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "jev-logger-"))
 })
 
-afterAll(() => {
-    rmSync("/tmp/opencode/jev-router-test/logger", { recursive: true, force: true })
+afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
 })
 
-describe("logger", () => {
-    test("writes leveled lines with the system id to the file", () => {
-        const logger = initLogger("test-system", { logging: true, logFile: testLogFile })
+function lines(file: string): string[] {
+    return readFileSync(file, "utf8").trim().split("\n")
+}
 
-        logger.info("hello", { a: 1 })
-        logger.warn("careful")
-        logger.error(new Error("boom"))
+describe("initLogger", () => {
+    test("writes only lines at or above the configured level", () => {
+        const file = join(dir, "nested", "router.log")
+        const logger = initLogger("test", { logLevel: "warn", logFile: file })
 
-        const contents = readFileSync(testLogFile, "utf8").trim().split("\n")
-        expect(contents).toHaveLength(3)
-        expect(contents[0]).toContain("[INFO] [test-system] hello")
-        expect(contents[0]).toContain("20") // ISO timestamp prefix
-        expect(contents[1]).toContain("[WARN] [test-system] careful")
-        expect(contents[2]).toContain("[ERROR] [test-system]")
-        expect(contents[2]).toContain("boom")
+        logger.debug("d")
+        logger.info("i")
+        logger.warn("w")
+        logger.error("e")
+
+        const written = lines(file)
+        expect(written).toHaveLength(2)
+        expect(written[0]).toMatch(/^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] \[WARN\] \[test\] w$/)
+        expect(written[1]).toEndWith("[ERROR] [test] e")
     })
 
-    test("serializes errors with name, message, and stack", () => {
-        const logger = initLogger("err-system", { logging: true, logFile: testLogFile })
-        logger.error(new Error("with stack"))
+    test("debug level writes every line", () => {
+        const file = join(dir, "router.log")
+        const logger = initLogger("test", { logLevel: "debug", logFile: file })
 
-        const last = readFileSync(testLogFile, "utf8").trim().split("\n").at(-1) as string
-        expect(last).toContain('"name":"Error"')
-        expect(last).toContain("with stack")
+        logger.debug("d")
+        logger.info("i")
+        logger.warn("w")
+        logger.error("e")
+
+        expect(lines(file)).toHaveLength(4)
     })
 
-    test("noop logger writes nothing", () => {
-        const logger = initLogger("quiet", { logging: false, logFile: testLogFile })
-        logger.info("invisible")
-        logger.debug("also invisible")
+    test("off returns the noop logger and creates no file", () => {
+        const file = join(dir, "off.log")
+        const logger = initLogger("test", { logLevel: "off", logFile: file })
 
-        const contents = readFileSync(testLogFile, "utf8")
-        expect(contents).not.toContain("invisible")
+        logger.error("x")
+
+        expect(logger).toBe(noopLogger)
+        expect(existsSync(file)).toBe(false)
     })
 
-    test("default log file lives under /tmp/opencode", () => {
-        expect(DEFAULT_LOG_FILE).toBe("/tmp/opencode/jev-router.log")
-        expect(existsSync("/tmp/opencode")).toBe(true)
+    test("creates the log file readable by the owner only", () => {
+        const file = join(dir, "private.log")
+        initLogger("test", { logLevel: "error", logFile: file }).error("x")
+
+        expect(statSync(file).mode & 0o077).toBe(0)
+    })
+
+    test("never throws when the log path is unusable", () => {
+        const blocker = join(dir, "blocker")
+        writeFileSync(blocker, "")
+        const logger = initLogger("test", { logLevel: "debug", logFile: join(blocker, "x.log") })
+
+        expect(() => logger.error("boom")).not.toThrow()
+    })
+})
+
+describe("serializeArg", () => {
+    test("passes strings through and stringifies objects", () => {
+        expect(serializeArg("plain")).toBe("plain")
+        expect(serializeArg({ a: 1 })).toBe('{"a":1}')
+        expect(serializeArg(42)).toBe("42")
+    })
+
+    test("serializes errors with name, message and cause", () => {
+        const parsed = JSON.parse(serializeArg(new Error("bad", { cause: "root" })))
+        expect(parsed).toMatchObject({ name: "Error", message: "bad", cause: "root" })
+    })
+
+    test("falls back to String() for values JSON cannot encode", () => {
+        const circular: Record<string, unknown> = {}
+        circular.self = circular
+        expect(serializeArg(circular)).toBe("[object Object]")
     })
 })

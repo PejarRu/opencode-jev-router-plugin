@@ -1,74 +1,101 @@
 import { appendFileSync, mkdirSync } from "node:fs"
-import path from "node:path"
+import { dirname } from "node:path"
 
-export const DEFAULT_LOG_FILE = "/tmp/opencode/jev-router.log"
+export const LOG_LEVELS = ["off", "error", "warn", "info", "debug"] as const
+export type LogLevel = (typeof LOG_LEVELS)[number]
 
-export interface LoggerOptions {
-    logging?: boolean
-    logFile?: string
+export interface Logger {
+    error(...args: unknown[]): void
+    warn(...args: unknown[]): void
+    info(...args: unknown[]): void
+    debug(...args: unknown[]): void
 }
 
-function serializeArg(arg: unknown): unknown {
+export interface LoggerOptions {
+    logLevel: LogLevel
+    logFile: string
+}
+
+const SEVERITY = { error: 0, warn: 1, info: 2, debug: 3 } as const
+type Level = keyof typeof SEVERITY
+
+/** Report an unwritable log file at most once per process. */
+let reported = false
+
+export const noopLogger: Logger = {
+    error() {},
+    warn() {},
+    info() {},
+    debug() {},
+}
+
+function stringify(value: unknown): string {
+    try {
+        return JSON.stringify(value) ?? String(value)
+    } catch {
+        return String(value)
+    }
+}
+
+export function serializeArg(arg: unknown): string {
+    if (typeof arg === "string") {
+        return arg
+    }
     if (arg instanceof Error) {
-        return JSON.stringify({
+        return stringify({
             name: arg.name,
             message: arg.message,
             stack: arg.stack,
-            cause: arg.cause ? serializeArg(arg.cause) : undefined,
+            cause:
+                arg.cause instanceof Error
+                    ? { name: arg.cause.name, message: arg.cause.message }
+                    : arg.cause,
         })
-    } else if (typeof arg === "object") {
-        return JSON.stringify(arg)
-    } else {
-        return arg
     }
+    if (typeof arg === "object" && arg !== null) {
+        return stringify(arg)
+    }
+    return String(arg)
 }
 
-function log(file: string, ...args: unknown[]) {
-    const serializedArgs = args.map(serializeArg)
-    appendFileSync(file, `[${new Date().toISOString()}] ${serializedArgs.join(" ")}\n`)
-}
-
-let directoryEnsured: string | undefined
-
-function ensureDirectory(file: string) {
-    const directory = path.dirname(file)
-
-    if (directoryEnsured === directory) {
-        return
+/**
+ * File logger. Writes are synchronous so lines survive a crash, filtered by
+ * level, and wrapped so a failing write can never escape into a hook.
+ */
+export function initLogger(systemId: string, options: LoggerOptions): Logger {
+    if (options.logLevel === "off") {
+        return noopLogger
     }
 
-    try {
-        mkdirSync(directory, { recursive: true })
-        directoryEnsured = directory
-    } catch {
-        // Fall through: appendFileSync reports its own error below.
-    }
-}
+    const threshold = SEVERITY[options.logLevel]
+    let directoryReady = false
 
-const fileLogger = (systemId: string, file: string) => {
-    ensureDirectory(file)
+    function write(level: Level, args: unknown[]): void {
+        if (SEVERITY[level] > threshold) {
+            return
+        }
+        try {
+            if (!directoryReady) {
+                mkdirSync(dirname(options.logFile), { recursive: true, mode: 0o700 })
+                directoryReady = true
+            }
+            const message = args.map(serializeArg).join(" ")
+            const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] [${systemId}] ${message}\n`
+            appendFileSync(options.logFile, line, { mode: 0o600 })
+        } catch {
+            // Config warnings and every diagnostic go to this logger; if it is
+            // unwritable the user must still learn that, but only once.
+            if (!reported) {
+                reported = true
+                console.error("[jev-router] cannot write log file", options.logFile)
+            }
+        }
+    }
 
     return {
-        info: (...args: unknown[]) => log(file, "[INFO]", `[${systemId}]`, ...args),
-        debug: (...args: unknown[]) => log(file, "[DEBUG]", `[${systemId}]`, ...args),
-        warn: (...args: unknown[]) => log(file, "[WARN]", `[${systemId}]`, ...args),
-        error: (...args: unknown[]) => log(file, "[ERROR]", `[${systemId}]`, ...args),
+        error: (...args) => write("error", args),
+        warn: (...args) => write("warn", args),
+        info: (...args) => write("info", args),
+        debug: (...args) => write("debug", args),
     }
 }
-
-const noopLogger = (_: string) => ({
-    info: (..._: unknown[]) => {},
-    debug: (..._: unknown[]) => {},
-    warn: (..._: unknown[]) => {},
-    error: (..._: unknown[]) => {},
-})
-
-export const initLogger = (systemId: string, options: LoggerOptions = {}) => {
-    if (!options.logging) {
-        return noopLogger(systemId)
-    }
-
-    return fileLogger(systemId, options.logFile ?? DEFAULT_LOG_FILE)
-}
-
-export type Logger = ReturnType<typeof initLogger>

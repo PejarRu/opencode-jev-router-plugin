@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin"
-import { getApiAuthFromProvider } from "./auth.ts"
+import { authFileSource, envSource, integrationSource, resolveApiKey } from "./auth.ts"
 import { normalizeConfig } from "./config.ts"
 import { createEffortHook } from "./effort.ts"
 import { initLogger } from "./logger.ts"
@@ -11,8 +11,12 @@ const plugin: Plugin.Plugin = {
     id: PLUGIN_ID,
 
     async setup(ctx) {
-        const config = normalizeConfig(ctx.options)
-        const logger = initLogger(PLUGIN_ID, config)
+        const warnings: string[] = []
+        const config = normalizeConfig(ctx.options, (message) => warnings.push(message))
+        const logger = initLogger(PLUGIN_ID, { logLevel: config.logLevel, logFile: config.logFile })
+        for (const warning of warnings) {
+            logger.warn("config:", warning)
+        }
 
         if (!config.enabled) {
             logger.info("plugin disabled")
@@ -30,7 +34,20 @@ const plugin: Plugin.Plugin = {
                 })
                 return provider?.data?.settings?.baseURL
             },
-            getRouterApiKey: () => getApiAuthFromProvider(config.router.provider),
+            getRouterApiKey: async () => {
+                const resolved = await resolveApiKey(
+                    [
+                        envSource(),
+                        integrationSource(ctx.integration.connection, config.router.provider),
+                        authFileSource(config.router.provider),
+                    ],
+                    (source, error) => logger.warn(`credential source ${source} failed:`, error),
+                )
+                if (resolved) {
+                    logger.info("router API key from", resolved.source)
+                }
+                return resolved?.key
+            },
             listSkills: async () => (await ctx.skill.list()).data ?? [],
             repository: ctx.location.project?.canonical,
             modelAvailable: async (providerID, modelID) => {

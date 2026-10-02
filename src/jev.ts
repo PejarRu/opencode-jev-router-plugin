@@ -5,15 +5,18 @@
  * `fetch` so tests never touch the network.
  */
 
-export type RoutingTaskType =
-    | "question"
-    | "implementation"
-    | "bugfix"
-    | "refactor"
-    | "review"
-    | "research"
-    | "debugging"
-    | "other"
+export const ROUTING_TASK_TYPES = [
+    "question",
+    "implementation",
+    "bugfix",
+    "refactor",
+    "review",
+    "research",
+    "debugging",
+    "other",
+] as const
+
+export type RoutingTaskType = (typeof ROUTING_TASK_TYPES)[number]
 
 export type Effort = "low" | "medium" | "high"
 export type ModelTier = "cheap" | "default" | "powerful"

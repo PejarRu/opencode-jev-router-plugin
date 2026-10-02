@@ -1,141 +1,373 @@
-import type { RoutingTaskType } from "./jev.ts"
+import { ROUTING_TASK_TYPES, type RoutingTaskType } from "./jev.ts"
+import { LOG_LEVELS, type LogLevel } from "./logger.ts"
+import { defaultLogFile } from "./paths.ts"
 
-export type ChoiceConfig = {
+export interface ChoiceConfig {
     provider: string
     model: string
 }
 
-/** Maps a JEV effort choice to the provider option value to send. */
 export type EffortValues = Partial<Record<string, string>>
 
 export interface ReasoningEffortConfig {
-    /**
-     * providerID → provider-option key used by that provider's protocol.
-     * A provider missing from the map gets no effort option.
-     * Set a value to "" to opt a provider out without deleting defaults.
-     */
+    /** Provider ID → provider option key that receives the effort value. `""` disables a provider. */
     providers?: Record<string, string>
-    /** Maps JEV effort choices to option values. Defaults to identity. */
+    /** Classifier effort choice → value sent to the provider. */
     values?: EffortValues
 }
 
 export interface PreviousContextConfig {
     enabled?: boolean
-    /** Max characters of previews sent to the classifier. */
     maxPreviewChars?: number
-    /** Max file names listed per previous turn. */
     maxFiles?: number
 }
 
+export const ERROR_MODES = ["fallback", "keep"] as const
+export type ErrorMode = (typeof ERROR_MODES)[number]
+
 export interface PluginConfig {
     enabled?: boolean
-    // OpenCode provider/model IDs.
-    // OpenRouter models are referenced as provider=openrouter,
-    // id=<OpenRouter model ID>.
     router?: ChoiceConfig
-
     cheap?: ChoiceConfig
     powerful?: ChoiceConfig
-
-    /** Model used for the `default` tier and whenever routing fails. */
     fallback?: ChoiceConfig
-
-    /** Optional per-task-type model override; wins over the tier model. */
     taskTypeModels?: Partial<Record<RoutingTaskType, ChoiceConfig>>
-
     minimumPromptLength?: number
     minimumThresholdConfidence?: number
     timeoutMs?: number
-
     ignoredPrefixes?: string[]
     ignoredAgents?: string[]
-
-    /** Send previous-turn and context-size details to the classifier. */
     previousContext?: PreviousContextConfig
-
-    /** Apply the classifier's effort answer as a reasoning-effort option. */
     reasoningEffort?: ReasoningEffortConfig
-
-    logging?: boolean
+    /** What to do when routing fails: switch to `fallback`, or keep the session model. */
+    onError?: ErrorMode
+    /** Register the `/jev` status command. */
+    statusCommand?: boolean
+    logLevel?: LogLevel
     logFile?: string
+    /** @deprecated Use `logLevel`. `true` maps to `"info"`, `false` to `"off"`. */
+    logging?: boolean
 }
 
-export type RuntimeConfig = Required<PluginConfig> & {
+export type RuntimeConfig = Required<
+    Omit<PluginConfig, "logging" | "previousContext" | "reasoningEffort">
+> & {
     previousContext: Required<PreviousContextConfig>
     reasoningEffort: Required<ReasoningEffortConfig>
 }
 
-const DEFAULTS: RuntimeConfig = {
-    enabled: true,
+export type Warn = (message: string) => void
 
-    router: {
-        provider: "openrouter",
-        model: "typesafe/jev-1.13",
-    },
-
-    cheap: {
-        provider: "openrouter",
-        model: "qwen/qwen3.6-flash",
-    },
-
-    fallback: {
-        provider: "openrouter",
-        model: "z-ai/glm-5.3-flash",
-    },
-
-    powerful: {
-        provider: "openrouter",
-        model: "deepseek/deepseek-v4-pro-0813",
-    },
-
-    taskTypeModels: {},
-
-    minimumThresholdConfidence: 0.5,
-    minimumPromptLength: 100,
-    timeoutMs: 5000,
-
-    ignoredPrefixes: ["/help", "/models", "/connect", "/logout", "/clear"],
-
-    ignoredAgents: ["title", "compaction"],
-
-    previousContext: {
+function defaults(): RuntimeConfig {
+    return {
         enabled: true,
-        maxPreviewChars: 240,
-        maxFiles: 10,
-    },
-
-    reasoningEffort: {
-        providers: {
-            openrouter: "reasoning_effort",
-            openai: "reasoningEffort",
+        router: { provider: "openrouter", model: "typesafe/jev-1.13" },
+        cheap: { provider: "openrouter", model: "qwen/qwen3.6-flash" },
+        powerful: { provider: "openrouter", model: "deepseek/deepseek-v4-pro-0813" },
+        fallback: { provider: "openrouter", model: "z-ai/glm-5.3-flash" },
+        taskTypeModels: {},
+        minimumPromptLength: 100,
+        minimumThresholdConfidence: 0.5,
+        timeoutMs: 5000,
+        ignoredPrefixes: ["/help", "/models", "/connect", "/logout", "/clear", "/jev"],
+        ignoredAgents: ["title", "compaction"],
+        previousContext: { enabled: true, maxPreviewChars: 240, maxFiles: 10 },
+        reasoningEffort: {
+            providers: { openrouter: "reasoning_effort", openai: "reasoningEffort" },
+            values: {},
         },
-        values: {},
-    },
-
-    logging: true,
-    logFile: "/tmp/opencode/jev-router.log",
+        onError: "fallback",
+        statusCommand: true,
+        logLevel: "warn",
+        logFile: defaultLogFile(),
+    }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value)
+/**
+ * Every option name accepted from user config. Keep in sync with the
+ * `PluginConfig` interface; `logging` is the deprecated alias of `logLevel`.
+ * A literal list (not derived from `defaults()`) so module evaluation never
+ * calls `os.homedir()`, which throws in a HOME-less container.
+ */
+const OPTION_NAMES = [
+    "enabled",
+    "router",
+    "cheap",
+    "powerful",
+    "fallback",
+    "taskTypeModels",
+    "minimumPromptLength",
+    "minimumThresholdConfidence",
+    "timeoutMs",
+    "ignoredPrefixes",
+    "ignoredAgents",
+    "previousContext",
+    "reasoningEffort",
+    "onError",
+    "statusCommand",
+    "logLevel",
+    "logFile",
+    "logging",
+] as const
+
+const KNOWN_OPTIONS = new Set<string>(OPTION_NAMES)
+
+type Input = Record<string, unknown>
+type Check<T> = (value: unknown) => value is T
+
+const isPlainObject = (value: unknown): value is Input =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+const isBoolean: Check<boolean> = (value) => typeof value === "boolean"
+const isNonEmptyString: Check<string> = (value): value is string =>
+    typeof value === "string" && value.trim() !== ""
+const isStringArray: Check<string[]> = (value): value is string[] =>
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+const isStringRecord: Check<Record<string, string>> = (value): value is Record<string, string> =>
+    isPlainObject(value) && Object.values(value).every((item) => typeof item === "string")
+const isUnitInterval: Check<number> = (value): value is number =>
+    typeof value === "number" && value >= 0 && value <= 1
+const isChoice: Check<ChoiceConfig> = (value): value is ChoiceConfig =>
+    isPlainObject(value) && isNonEmptyString(value.provider) && isNonEmptyString(value.model)
+
+function integerAtLeast(min: number): Check<number> {
+    return (value): value is number => Number.isInteger(value) && (value as number) >= min
 }
 
-/** Merge `patch` into `base`; plain objects merge recursively, everything else replaces. */
-export function deepMerge<T>(base: T, patch: unknown): T {
-    if (!isPlainObject(base) || !isPlainObject(patch)) {
-        return (patch === undefined ? base : patch) as T
+function oneOf<T extends string>(values: readonly T[]): Check<T> {
+    return (value): value is T =>
+        typeof value === "string" && (values as readonly string[]).includes(value)
+}
+
+function pick<T>(
+    name: string,
+    value: unknown,
+    fallback: T,
+    valid: Check<T>,
+    expected: string,
+    warn: Warn,
+): T {
+    if (value === undefined) {
+        return fallback
+    }
+    if (valid(value)) {
+        return value
+    }
+    warn(`option "${name}" must be ${expected}; using default ${JSON.stringify(fallback)}`)
+    return fallback
+}
+
+function choice(name: string, value: unknown, fallback: ChoiceConfig, warn: Warn): ChoiceConfig {
+    if (value === undefined) {
+        return fallback
+    }
+    const merged = isPlainObject(value) ? { ...fallback, ...value } : value
+    if (isChoice(merged)) {
+        return { provider: merged.provider, model: merged.model }
+    }
+    warn(
+        `option "${name}" must be { provider, model } with non-empty strings; using default ${JSON.stringify(fallback)}`,
+    )
+    return fallback
+}
+
+function section(name: string, value: unknown, warn: Warn): Input {
+    if (value === undefined) {
+        return {}
+    }
+    if (isPlainObject(value)) {
+        return value
+    }
+    warn(`option "${name}" must be an object; using defaults`)
+    return {}
+}
+
+function taskTypeModels(
+    value: unknown,
+    warn: Warn,
+): Partial<Record<RoutingTaskType, ChoiceConfig>> {
+    const isTaskType = oneOf(ROUTING_TASK_TYPES)
+    const result: Partial<Record<RoutingTaskType, ChoiceConfig>> = {}
+
+    for (const [key, entry] of Object.entries(section("taskTypeModels", value, warn))) {
+        if (!isTaskType(key)) {
+            warn(`option "taskTypeModels.${key}" is not a known task type; ignored`)
+            continue
+        }
+        if (!isChoice(entry)) {
+            warn(
+                `option "taskTypeModels.${key}" must be { provider, model } with non-empty strings; ignored`,
+            )
+            continue
+        }
+        result[key] = { provider: entry.provider, model: entry.model }
     }
 
-    const merged: Record<string, unknown> = { ...base }
-
-    for (const [key, patchValue] of Object.entries(patch)) {
-        merged[key] = deepMerge((base as Record<string, unknown>)[key], patchValue)
-    }
-
-    return merged as T
+    return result
 }
 
-export function normalizeConfig(options: unknown): RuntimeConfig {
-    const input = isPlainObject(options) ? options : {}
-    return deepMerge(DEFAULTS, input)
+function logLevel(input: Input, fallback: LogLevel, warn: Warn): LogLevel {
+    let legacy: LogLevel | undefined
+    if (input.logging !== undefined) {
+        warn('option "logging" is deprecated; use "logLevel"')
+        legacy = input.logging === true ? "info" : input.logging === false ? "off" : undefined
+    }
+    return pick(
+        "logLevel",
+        input.logLevel,
+        legacy ?? fallback,
+        oneOf(LOG_LEVELS),
+        `one of ${LOG_LEVELS.join(", ")}`,
+        warn,
+    )
+}
+
+/**
+ * Validate plugin options against the defaults. Never throws: every invalid
+ * value is reported through `warn` and replaced by its default, so a typo in
+ * user config degrades one option instead of disabling routing.
+ */
+export function normalizeConfig(options: unknown, warn: Warn = () => {}): RuntimeConfig {
+    const base = defaults()
+
+    if (options === undefined || options === null) {
+        return base
+    }
+    if (!isPlainObject(options)) {
+        warn("plugin options must be an object; using defaults")
+        return base
+    }
+
+    for (const key of Object.keys(options)) {
+        if (!KNOWN_OPTIONS.has(key)) {
+            warn(`unknown option "${key}" ignored`)
+        }
+    }
+
+    const previous = section("previousContext", options.previousContext, warn)
+    const effort = section("reasoningEffort", options.reasoningEffort, warn)
+    const nonNegative = integerAtLeast(0)
+
+    return {
+        enabled: pick("enabled", options.enabled, base.enabled, isBoolean, "a boolean", warn),
+        router: choice("router", options.router, base.router, warn),
+        cheap: choice("cheap", options.cheap, base.cheap, warn),
+        powerful: choice("powerful", options.powerful, base.powerful, warn),
+        fallback: choice("fallback", options.fallback, base.fallback, warn),
+        taskTypeModels: taskTypeModels(options.taskTypeModels, warn),
+        minimumPromptLength: pick(
+            "minimumPromptLength",
+            options.minimumPromptLength,
+            base.minimumPromptLength,
+            nonNegative,
+            "an integer >= 0",
+            warn,
+        ),
+        minimumThresholdConfidence: pick(
+            "minimumThresholdConfidence",
+            options.minimumThresholdConfidence,
+            base.minimumThresholdConfidence,
+            isUnitInterval,
+            "a number between 0 and 1",
+            warn,
+        ),
+        timeoutMs: pick(
+            "timeoutMs",
+            options.timeoutMs,
+            base.timeoutMs,
+            integerAtLeast(1),
+            "an integer >= 1",
+            warn,
+        ),
+        ignoredPrefixes: pick(
+            "ignoredPrefixes",
+            options.ignoredPrefixes,
+            base.ignoredPrefixes,
+            isStringArray,
+            "an array of strings",
+            warn,
+        ),
+        ignoredAgents: pick(
+            "ignoredAgents",
+            options.ignoredAgents,
+            base.ignoredAgents,
+            isStringArray,
+            "an array of strings",
+            warn,
+        ),
+        previousContext: {
+            enabled: pick(
+                "previousContext.enabled",
+                previous.enabled,
+                base.previousContext.enabled,
+                isBoolean,
+                "a boolean",
+                warn,
+            ),
+            maxPreviewChars: pick(
+                "previousContext.maxPreviewChars",
+                previous.maxPreviewChars,
+                base.previousContext.maxPreviewChars,
+                nonNegative,
+                "an integer >= 0",
+                warn,
+            ),
+            maxFiles: pick(
+                "previousContext.maxFiles",
+                previous.maxFiles,
+                base.previousContext.maxFiles,
+                nonNegative,
+                "an integer >= 0",
+                warn,
+            ),
+        },
+        reasoningEffort: {
+            providers: {
+                ...base.reasoningEffort.providers,
+                ...pick(
+                    "reasoningEffort.providers",
+                    effort.providers,
+                    {},
+                    isStringRecord,
+                    "an object of strings",
+                    warn,
+                ),
+            },
+            values: {
+                ...base.reasoningEffort.values,
+                ...pick(
+                    "reasoningEffort.values",
+                    effort.values,
+                    {},
+                    isStringRecord,
+                    "an object of strings",
+                    warn,
+                ),
+            },
+        },
+        onError: pick(
+            "onError",
+            options.onError,
+            base.onError,
+            oneOf(ERROR_MODES),
+            `one of ${ERROR_MODES.join(", ")}`,
+            warn,
+        ),
+        statusCommand: pick(
+            "statusCommand",
+            options.statusCommand,
+            base.statusCommand,
+            isBoolean,
+            "a boolean",
+            warn,
+        ),
+        logLevel: logLevel(options, base.logLevel, warn),
+        logFile: pick(
+            "logFile",
+            options.logFile,
+            base.logFile,
+            isNonEmptyString,
+            "a non-empty string",
+            warn,
+        ),
+    }
 }

@@ -3,6 +3,7 @@ import { normalizeConfig } from "../../src/config.ts"
 import type { JsonStorage, StoredDecision } from "../../src/decision.ts"
 import type { HistoryMessage } from "../../src/history.ts"
 import type { FetchLike } from "../../src/jev.ts"
+import { noopLogger } from "../../src/logger.ts"
 import type { PromptEvent } from "../../src/router.ts"
 import { createPromptRouter, type PromptRouterDeps } from "../../src/router.ts"
 import { makeDecisionFixture } from "./fixtures.ts"
@@ -107,12 +108,7 @@ export function createRouterHarness(options: {
 
     const deps: PromptRouterDeps = {
         config,
-        logger: {
-            info: () => {},
-            debug: () => {},
-            warn: () => {},
-            error: () => {},
-        },
+        logger: noopLogger,
         storage,
         session,
         getRouterBaseUrl: async () =>

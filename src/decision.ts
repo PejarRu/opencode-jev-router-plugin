@@ -67,9 +67,7 @@ export function pickTier(config: RuntimeConfig, response: JevRoutingResponse): T
         return { trusted: false }
     }
 
-    const trusted =
-        config.minimumThresholdConfidence === undefined ||
-        answer.confidence >= config.minimumThresholdConfidence
+    const trusted = answer.confidence >= config.minimumThresholdConfidence
 
     return { tier: answer.choice, confidence: answer.confidence, trusted }
 }
@@ -90,7 +88,7 @@ export function resolveModel(
     const tier = pickTier(config, response)
     const taskType = response.answers.task_type?.choice
 
-    const override = taskType ? config.taskTypeModels?.[taskType] : undefined
+    const override = taskType ? config.taskTypeModels[taskType] : undefined
 
     if (override) {
         return { model: override.model, provider: override.provider, tier, taskType }
