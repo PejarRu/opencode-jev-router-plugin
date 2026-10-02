@@ -138,12 +138,14 @@ export function createPromptRouter(deps: PromptRouterDeps) {
             const routerBaseUrl = await deps.getRouterBaseUrl()
             if (!routerBaseUrl) {
                 logger.warn(`provider ${config.router.provider} not found; skipping routing`)
+                await clearRouted(sessionID)
                 return
             }
             await routePrompt(event, routerBaseUrl)
         } catch (error: unknown) {
             if (config.onError === "keep") {
                 logger.error("jev routing failed; keeping the session model:", error)
+                await clearRouted(sessionID)
                 return
             }
             logger.error("jev routing failed; using fallback:", error)

@@ -347,3 +347,47 @@ describe("onError", () => {
         expect(harness.calls.synthetic).toHaveLength(0)
     })
 })
+
+describe("clears the routed model", () => {
+    test("a later prompt without a provider base URL leaves no routed model", async () => {
+        const options: Parameters<typeof createRouterHarness>[0] = { messages: HISTORY }
+        const harness = createRouterHarness(options)
+
+        await harness.prompt(makePromptEvent())
+        expect((await loadDecision(harness.storage, "ses_test"))?.resolved).toEqual({
+            provider: "openrouter",
+            model: "deepseek/deepseek-v4-pro-0813",
+        })
+
+        options.noBaseUrl = true
+        await harness.prompt({ ...makePromptEvent(), messageID: "msg_next" })
+
+        expect(harness.fetchCalls).toHaveLength(1)
+        expect((await loadDecision(harness.storage, "ses_test"))?.resolved).toBeUndefined()
+    })
+
+    test("onError keep clears the routed model when a later classification fails", async () => {
+        let calls = 0
+        const harness = createRouterHarness({
+            config: { onError: "keep" },
+            messages: HISTORY,
+            fetch: () => {
+                calls += 1
+                return calls === 1
+                    ? new Response(JSON.stringify(makeDecisionFixture()))
+                    : new Response("classifier down", { status: 500 })
+            },
+        })
+
+        await harness.prompt(makePromptEvent())
+        expect((await loadDecision(harness.storage, "ses_test"))?.resolved).toEqual({
+            provider: "openrouter",
+            model: "deepseek/deepseek-v4-pro-0813",
+        })
+
+        await harness.prompt({ ...makePromptEvent(), messageID: "msg_next" })
+
+        expect(harness.calls.switchModel).toHaveLength(1)
+        expect((await loadDecision(harness.storage, "ses_test"))?.resolved).toBeUndefined()
+    })
+})

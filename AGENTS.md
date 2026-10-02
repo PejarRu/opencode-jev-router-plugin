@@ -1,74 +1,67 @@
 # AGENTS.md
 
-`opencode-jev-router-plugin` is an OpenCode v2 plugin. Before a prompt is
-admitted, it asks the JEV classifier (OpenRouter `systemone` endpoint) six
-questions and switches the session to the cheapest likely-capable model.
-Routing is best-effort: any failure is contained and the prompt is still
-admitted.
+`opencode-jev-router-plugin` is an OpenCode v2 plugin published to npm.
+Before a prompt is admitted it asks the JEV classifier (router provider's
+`systemone` endpoint) six questions and switches the session to the cheapest
+likely-capable model; a context hook maps the `effort` answer to the routed
+provider's reasoning option. Routing is best-effort: failures are contained
+and the prompt is always admitted.
 
-## Location
-
-The package lives at the repository root. `example/opencode-jev-router-plugin/`
-is the read-only upstream reference (gitignored, never edited). All tests live
-in `test/` (`bunfig.toml` pins the Bun test root to `test/`, so colocated
-`src/**/*.test.ts` would be silently skipped — keep tests in `test/`).
+`example/` is the upstream reference copy (gitignored, has its own `.git`).
+Never edit it. All tests live in `test/`; `bunfig.toml` pins the Bun test root
+to `test/`, so colocated `src/**/*.test.ts` would be silently skipped — keep
+tests in `test/`.
 
 ## Commands
 
-```sh
-bun install                 # dev deps (lockfile: bun.lock, frozen in CI)
-bun test                    # full suite (test/*.test.ts)
-bun test test/router.test.ts   # single file
-bun test -t "skips short prompts" # single test by name
-bun run typecheck           # tsc --noEmit (src + test)
-bun run lint                # biome check .
-bun run format              # biome check --write .
-bun run build               # tsc -p tsconfig.build.json + .d.ts import fix
-bun run check:package       # publint + attw
-bun run smoke               # scripts/smoke-pack.sh (pack, npm install, Node import)
-```
+Bun for tests and installs, Node ≥ 20 for package checks.
 
-`@opencode/plugin` is pinned to `latest`, so the SDK API can drift.
+```sh
+bun install
+bun test                          # all tests (test/*.test.ts)
+bun test test/router.test.ts      # one file
+bun test -t "re-run"              # by name
+bun run typecheck                 # tsc --noEmit over src + test
+bun run lint                      # Biome; bun run format fixes
+bun run build                     # tsc -p tsconfig.build.json + .d.ts import fix
+bun run check:package             # publint + attw
+bun run smoke                     # npm-install packed tarball, import in Node
+```
 
 ## Architecture
 
-`src/index.ts` is the only module that imports the OpenCode SDK
-(`@opencode/plugin`, `Plugin.define`). It reads real `ctx` state and injects
-it into plain functions. Every other module takes its dependencies as an
-argument (see `PromptRouterDeps`, `EffortHookDeps`) so it can be tested
-without starting OpenCode.
-
-- `router.ts` — prompt-hook flow; deps injected.
-- `effort.ts` — context-hook flow: classifier `effort` → provider option.
-- `jev.ts` — classifier request/response protocol; pure, injectable `fetch`.
-- `history.ts` — previous-turn and context-size summarizer.
-- `decision.ts` — tier/confidence resolution + storage keys.
-- `display.ts` — TUI one-liner and the machine-readable decision block.
-- `text.ts` — token estimates, `@`-mention stripping, previews.
-- `testing.ts` — test harness (`FakeStorage`, fake session/fetch).
-- `README.md` — accurate user-facing spec (install, options table,
-  resolution order, troubleshooting). Keep it in sync when behavior changes.
+- `src/index.ts` — only SDK-aware module, `import type` only, single default
+  export. Wires `ctx` into the modules below and registers the prompt hook,
+  one provider-scoped context hook per effort provider, and `/jev`.
+- `router.ts` prompt hook · `effort.ts` context hook · `command.ts` `/jev` ·
+  `jev.ts` classifier protocol · `history.ts` previous-turn summary ·
+  `decision.ts` resolution + decision storage · `usage.ts` idempotent usage ·
+  `display.ts` one-liners and text blocks · `text.ts` token estimates,
+  mention stripping · `config.ts` schema, defaults, validation · `auth.ts`
+  credential chain · `paths.ts` XDG paths · `logger.ts` leveled logger.
+- Tests in `test/`, fakes in `test/support/harness.ts`, decision fixture in
+  `test/support/fixtures.ts`.
 
 ## Gotchas
 
-- The prompt hook handler must never throw. All routing errors are caught and
-  the session falls back to the fallback model; keep that containment.
-- Classifier answers are all optional (`JevRoutingResponseAnswers`). Consumers
-  must degrade gracefully; never assume an answer field exists.
-- Modules outside `index.ts` must not import the OpenCode SDK. Preserve the
-  dependency-injection boundary or the unit tests stop working.
-- Add a config option in three places together: `PluginConfig`, `DEFAULTS`
-  (both in `config.ts`), and the README options table. `normalizeConfig`
-  deep-merges user options over `DEFAULTS`.
-- The router API key is read directly from
-  `~/.local/share/opencode/auth.json` (entry must be `type: "api"`). Routed
-  target models use normal OpenCode provider auth.
-- Storage keys are `jev/decision/<sessionID>` and `jev/usage/<sessionID>`.
-  The effort hook reads the stored decision, so the decision must be saved
-  before the next context-hook call.
-- Default log file is `/tmp/opencode/jev-router.log`; set `logging: false` to
-  silence. Grep it for `routing decision:` lines when debugging.
+- Hooks, the command handler and the logger must never throw.
+- Classifier answers are all optional.
+- `tsconfig.build.json` uses Node types only: Bun APIs in `src/` break the
+  build. Relative imports need `.ts` extensions.
+- New option: `PluginConfig` + defaults + validation in `config.ts`, a config
+  test, and the README options table.
+- Decision is saved before `switchModel`; the effort hook compares
+  `StoredDecision.resolved` with the call's model. The router clears `resolved`
+  on skipped prompts, a missing provider, and routing failures, so stale effort
+  is never applied.
+- The router key resolves in order `JEV_ROUTER_API_KEY` → the OpenCode
+  integration connection → `auth.json`; the first non-empty value wins.
+- Storage keys: `jev/decision/<sessionID>`, `jev/usage/<sessionID>`.
+- User-visible changes need a changeset (`bun run changeset`).
+- Default log: `~/.local/state/opencode/jev-router.log`, level `warn`.
 
 ## Verify
 
-Run `bun test` and `bunx tsc --noEmit` after changes, and report the results.
+Run `bun test`, `bun run typecheck` and `bun run lint` after changes; also
+`bun run build && bun run check:package && bun run smoke` when touching
+`package.json`, `tsconfig*.json` or `src/index.ts`. Report the results.

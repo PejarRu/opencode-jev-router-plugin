@@ -21,7 +21,7 @@ function formatCost(cost: number): string {
 
 /**
  * One-line summary for the TUI: shown as the collapsed-message description.
- * Example: `⚡ jev: powerful (93%) → openrouter/deepseek-v4.1-flash ·
+ * Example: `⚡ jev: powerful (93%) → openrouter/deepseek/deepseek-v4-pro-0813 ·
  * implementation · effort high · $0.0000024`
  */
 export function describeDecision(
