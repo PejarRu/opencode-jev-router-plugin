@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { addUsage, getUsage } from "../src/usage.ts"
+import { addUsage, getUsage, usageKey } from "../src/usage.ts"
 import { FakeStorage } from "./support/harness.ts"
 
-describe("usage tracking", () => {
-    test("starts at zero for unknown sessions", async () => {
-        const storage = new FakeStorage()
-        expect(await getUsage(storage, "ses_1")).toEqual({
+const usage = { input_tokens: 100, output_tokens: 10, cost: 0.001 }
+
+describe("usage", () => {
+    test("starts at zero", async () => {
+        expect(await getUsage(new FakeStorage(), "ses_1")).toEqual({
             cost: 0,
             inputTokens: 0,
             outputTokens: 0,
@@ -13,27 +14,47 @@ describe("usage tracking", () => {
         })
     })
 
-    test("accumulates per-session usage", async () => {
+    test("accumulates per session", async () => {
         const storage = new FakeStorage()
 
-        await addUsage(storage, "ses_1", { input_tokens: 100, output_tokens: 10, cost: 0.01 })
-        await addUsage(storage, "ses_1", { input_tokens: 50, output_tokens: 5, cost: 0.02 })
-        await addUsage(storage, "ses_2", { input_tokens: 7, output_tokens: 1, cost: 0.001 })
+        await addUsage(storage, "ses_1", "msg_1", usage)
+        await addUsage(storage, "ses_1", "msg_2", usage)
+        await addUsage(storage, "ses_2", "msg_1", usage)
 
-        const stats = await getUsage(storage, "ses_1")
-        expect(stats.requests).toBe(2)
-        expect(stats.inputTokens).toBe(150)
-        expect(stats.outputTokens).toBe(15)
-        expect(stats.cost).toBeCloseTo(0.03, 10)
+        expect(await getUsage(storage, "ses_1")).toEqual({
+            cost: 0.002,
+            inputTokens: 200,
+            outputTokens: 20,
+            requests: 2,
+            lastMessageID: "msg_2",
+        })
         expect((await getUsage(storage, "ses_2")).requests).toBe(1)
     })
 
-    test("tolerates corrupt stored values", async () => {
+    test("counts a message once when the prompt hook re-runs", async () => {
         const storage = new FakeStorage()
-        storage.map.set("jev/usage/ses_bad", { cost: "nonsense" })
 
-        const stats = await getUsage(storage, "ses_bad")
-        expect(stats.cost).toBe(0)
-        expect(stats.requests).toBe(0)
+        await addUsage(storage, "ses_1", "msg_1", usage)
+        await addUsage(storage, "ses_1", "msg_1", usage)
+
+        expect((await getUsage(storage, "ses_1")).requests).toBe(1)
+    })
+
+    test("treats corrupt values as zero", async () => {
+        const storage = new FakeStorage()
+        await storage.set(usageKey("ses_1"), {
+            cost: "x",
+            inputTokens: null,
+            outputTokens: Number.NaN,
+            requests: 3,
+            lastMessageID: 7,
+        })
+
+        expect(await getUsage(storage, "ses_1")).toEqual({
+            cost: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            requests: 3,
+        })
     })
 })

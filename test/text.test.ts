@@ -1,36 +1,15 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import path from "node:path"
+import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { estimateFileTokens, estimateTokens, stripMentions, truncatePreview } from "../src/text.ts"
-
-const scratch = mkdtempSync(path.join(tmpdir(), "jev-router-text-"))
-
-afterAll(() => {
-    rmSync(scratch, { recursive: true, force: true })
-})
 
 describe("estimateTokens", () => {
     test("splits at four characters per token", () => {
         expect(estimateTokens("abcdefgh")).toBe(2)
         expect(estimateTokens("abc")).toBe(1)
         expect(estimateTokens("")).toBe(0)
-    })
-})
-
-describe("estimateFileTokens", () => {
-    test("reads a local file through a file:// URI", async () => {
-        const file = path.join(scratch, "sample.txt")
-        writeFileSync(file, "a".repeat(8))
-
-        const tokens = await estimateFileTokens(pathToFileURL(file).toString())
-        expect(tokens).toBe(2)
-    })
-
-    test("rejects missing files", async () => {
-        const missing = pathToFileURL(path.join(scratch, "nope.txt")).toString()
-        await expect(estimateFileTokens(missing)).rejects.toThrow()
     })
 })
 
@@ -88,5 +67,29 @@ describe("truncatePreview", () => {
 
     test("keeps short text intact", () => {
         expect(truncatePreview("short", 50)).toBe("short")
+    })
+})
+
+describe("estimateFileTokens via stat", () => {
+    const dir = mkdtempSync(join(tmpdir(), "jev-text-"))
+
+    afterAll(() => {
+        rmSync(dir, { recursive: true, force: true })
+    })
+
+    test("estimates from byte size for file URIs and plain paths", async () => {
+        const file = join(dir, "sample.txt")
+        writeFileSync(file, "x".repeat(400))
+
+        expect(await estimateFileTokens(pathToFileURL(file).href)).toBe(100)
+        expect(await estimateFileTokens(file)).toBe(100)
+    })
+
+    test("returns undefined for directories", async () => {
+        expect(await estimateFileTokens(pathToFileURL(dir).href)).toBeUndefined()
+    })
+
+    test("rejects missing paths", async () => {
+        await expect(estimateFileTokens(join(dir, "missing.txt"))).rejects.toThrow()
     })
 })

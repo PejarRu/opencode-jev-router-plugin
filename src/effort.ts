@@ -2,15 +2,10 @@ import type { RuntimeConfig } from "./config.ts"
 import { type JsonStorage, loadDecision } from "./decision.ts"
 import type { Logger } from "./logger.ts"
 
-/**
- * Structural subset of the `session.hook("context", ...)` event. The agent
- * loop is the only request kind that reaches this hook, and `options`
- * carries request overrides (typed generation settings plus provider
- * options).
- */
+/** Structural subset of OpenCode's context hook event. */
 export interface ContextEvent {
     readonly sessionID: string
-    readonly model: { providerID: string; id: string }
+    readonly model: { readonly providerID: string; readonly id: string }
     options: Record<string, unknown>
 }
 
@@ -20,43 +15,45 @@ export interface EffortHookDeps {
     storage: JsonStorage
 }
 
+/** Providers that get a provider-scoped context hook. */
+export function effortProviders(config: RuntimeConfig): string[] {
+    return Object.entries(config.reasoningEffort.providers)
+        .filter(([, optionKey]) => optionKey !== "")
+        .map(([providerID]) => providerID)
+}
+
 /**
- * Create the `session.hook("context", ...)` handler that applies the
- * classifier's effort answer to the outgoing model request.
- *
- * For each agent-loop call the handler looks up the session's latest
- * routing decision and, when the routed provider has a configured
- * provider-option key, sets that option to the mapped effort value:
- *
- * - `openrouter` → `reasoning_effort` (OpenAI-compatible chat protocol)
- * - `openai` → `reasoningEffort` (OpenAI Responses protocol)
+ * Create the `session.hook("context", ...)` handler. Applies the classifier's
+ * effort only to the model the router switched to, never overwrites a value an
+ * earlier hook set, and never throws.
  */
-export function createEffortHook(deps: EffortHookDeps) {
-    const { config, logger, storage } = deps
-
+export function createEffortHook({ config, logger, storage }: EffortHookDeps) {
     return async function onContext(event: ContextEvent): Promise<void> {
-        const optionKey = config.reasoningEffort.providers[event.model.providerID]
-
+        const { providerID, id } = event.model
+        const optionKey = config.reasoningEffort.providers[providerID]
         if (!optionKey) {
             return
         }
-
-        const stored = await loadDecision(storage, event.sessionID)
-        const choice = stored?.response.answers.effort?.choice
-
-        if (!choice) {
+        if (event.options[optionKey] !== undefined) {
+            logger.debug("effort already set by an earlier hook:", `${providerID}:${optionKey}`)
             return
         }
 
-        const value = config.reasoningEffort.values[choice] ?? choice
-
-        event.options[optionKey] = value
-
-        logger.debug(
-            "applied effort",
-            choice,
-            "as",
-            `${event.model.providerID}:${optionKey}=${value}`,
-        )
+        try {
+            const stored = await loadDecision(storage, event.sessionID)
+            const choice = stored?.response.answers.effort?.choice
+            if (!stored || !choice) {
+                return
+            }
+            if (stored.resolved?.provider !== providerID || stored.resolved.model !== id) {
+                logger.debug("skipped effort: model is not the routed model", `${providerID}/${id}`)
+                return
+            }
+            const value = config.reasoningEffort.values[choice] ?? choice
+            event.options[optionKey] = value
+            logger.debug("applied effort", choice, "as", `${providerID}:${optionKey}=${value}`)
+        } catch (error) {
+            logger.warn("could not apply effort:", error)
+        }
     }
 }

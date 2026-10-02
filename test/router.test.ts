@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
-import { decisionKey } from "../src/decision.ts"
-import { usageKey } from "../src/usage.ts"
+import { decisionKey, loadDecision } from "../src/decision.ts"
+import { getUsage, usageKey } from "../src/usage.ts"
 import { makeDecisionFixture } from "./support/fixtures.ts"
 import { createRouterHarness, makeHistoryMessage, makePromptEvent } from "./support/harness.ts"
 
@@ -31,6 +31,10 @@ const HISTORY = [
         content: [{ type: "text", text: "done earlier" }],
     }),
 ]
+
+const CLASSIFIER_DOWN = {
+    fetch: () => new Response("classifier down", { status: 500 }),
+}
 
 describe("prompt router", () => {
     test("routes, switches model, and posts a decision message", async () => {
@@ -144,9 +148,7 @@ describe("prompt router", () => {
     })
 
     test("falls back to the fallback model on classifier failure", async () => {
-        const harness = createRouterHarness({
-            fetch: () => new Response("classifier down", { status: 500 }),
-        })
+        const harness = createRouterHarness(CLASSIFIER_DOWN)
 
         await expect(harness.prompt(makePromptEvent())).resolves.toBeUndefined()
 
@@ -276,5 +278,72 @@ describe("prompt router", () => {
 
         const usage = (await harness.storage.get(usageKey("ses_test"))) as { inputTokens: number }
         expect(usage.inputTokens).toBe(0)
+    })
+})
+
+describe("prompt hook re-runs", () => {
+    test("reuses the stored decision for the same message", async () => {
+        const harness = createRouterHarness({ messages: HISTORY })
+        const event = makePromptEvent()
+
+        await harness.prompt(event)
+        await harness.prompt(event)
+
+        expect(harness.fetchCalls).toHaveLength(1)
+        expect(harness.calls.switchModel).toHaveLength(2)
+        expect(harness.calls.switchModel[1]).toEqual(harness.calls.switchModel[0])
+        expect(harness.calls.synthetic).toHaveLength(1)
+        expect((await getUsage(harness.storage, "ses_test")).requests).toBe(1)
+    })
+
+    test("classifies every new message", async () => {
+        const harness = createRouterHarness({ messages: HISTORY })
+
+        await harness.prompt(makePromptEvent())
+        await harness.prompt({ ...makePromptEvent(), messageID: "msg_next" })
+
+        expect(harness.fetchCalls).toHaveLength(2)
+        expect((await getUsage(harness.storage, "ses_test")).requests).toBe(2)
+    })
+
+    test("shares one classification across concurrent calls for the same message", async () => {
+        const harness = createRouterHarness({ messages: HISTORY })
+        const event = makePromptEvent()
+
+        await Promise.all([harness.prompt(event), harness.prompt(event)])
+
+        expect(harness.fetchCalls).toHaveLength(1)
+        expect((await getUsage(harness.storage, "ses_test")).requests).toBe(1)
+    })
+
+    test("stores the model the session was switched to", async () => {
+        const harness = createRouterHarness({ messages: HISTORY })
+
+        await harness.prompt(makePromptEvent())
+
+        expect((await loadDecision(harness.storage, "ses_test"))?.resolved).toEqual({
+            provider: "openrouter",
+            model: "deepseek/deepseek-v4-pro-0813",
+        })
+    })
+
+    test("stores no routed model when the session model is kept", async () => {
+        const harness = createRouterHarness({ messages: HISTORY, availableModels: [] })
+
+        await harness.prompt(makePromptEvent())
+
+        expect(harness.calls.switchModel).toHaveLength(0)
+        expect((await loadDecision(harness.storage, "ses_test"))?.resolved).toBeUndefined()
+    })
+})
+
+describe("onError", () => {
+    test("keeps the session model when onError is keep", async () => {
+        const harness = createRouterHarness({ ...CLASSIFIER_DOWN, config: { onError: "keep" } })
+
+        await harness.prompt(makePromptEvent())
+
+        expect(harness.calls.switchModel).toHaveLength(0)
+        expect(harness.calls.synthetic).toHaveLength(0)
     })
 })

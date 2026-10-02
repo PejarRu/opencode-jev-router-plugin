@@ -156,6 +156,7 @@ export function makeStoredDecision(
         messageID: "msg_1",
         createdAt: 1_700_000_000_000,
         response: makeDecisionFixture(),
+        resolved: { provider: "openrouter", model: "deepseek/deepseek-v4-pro-0813" },
         ...overrides,
     }
 }

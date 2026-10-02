@@ -1,4 +1,4 @@
-import type { RuntimeConfig } from "./config.ts"
+import type { ChoiceConfig, RuntimeConfig } from "./config.ts"
 import type { JevRoutingResponse, ModelTier, RoutingTaskType } from "./jev.ts"
 
 /**
@@ -19,6 +19,8 @@ export interface StoredDecision {
     messageID: string
     createdAt: number
     response: JevRoutingResponse
+    /** Model the session was switched to; absent when the session model was kept. */
+    resolved?: ChoiceConfig
 }
 
 export const DECISION_KEY_PREFIX = "jev/decision/"

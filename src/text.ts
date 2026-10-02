@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs"
+import { stat } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 
 /** Rough token estimate (~4 chars/token). Good enough for routing. */
@@ -6,16 +6,15 @@ export function estimateTokens(text: string): number {
     return Math.ceil(text.length / 4)
 }
 
-/** Stream a local file and estimate its token count. */
-export async function estimateFileTokens(uri: string): Promise<number> {
-    const path = fileURLToPath(uri)
-    let count = 0
-
-    for await (const chunk of createReadStream(path, { encoding: "utf8" })) {
-        count += chunk.length
-    }
-
-    return Math.ceil(count / 4)
+/**
+ * Estimate a file's token count from its byte size, without reading it.
+ * Accepts a `file:` URI or a plain path. Non-regular files (directories,
+ * sockets) return undefined; missing paths reject.
+ */
+export async function estimateFileTokens(location: string): Promise<number | undefined> {
+    const path = location.startsWith("file:") ? fileURLToPath(location) : location
+    const info = await stat(path)
+    return info.isFile() ? Math.min(Math.ceil(info.size / 4), 200_000) : undefined
 }
 
 export interface Mention {

@@ -1,97 +1,169 @@
 import { describe, expect, test } from "bun:test"
-import { normalizeConfig } from "../src/config.ts"
-import { type ContextEvent, createEffortHook } from "../src/effort.ts"
-import { FakeStorage, makeStoredDecision } from "./support/harness.ts"
+import { type ChoiceConfig, normalizeConfig, type PluginConfig } from "../src/config.ts"
+import { type JsonStorage, saveDecision } from "../src/decision.ts"
+import { type ContextEvent, createEffortHook, effortProviders } from "../src/effort.ts"
+import { noopLogger } from "../src/logger.ts"
+import {
+    createRouterHarness,
+    FakeStorage,
+    makePromptEvent,
+    makeStoredDecision,
+} from "./support/harness.ts"
 
-const config = normalizeConfig({})
+const ROUTED: ChoiceConfig = { provider: "openrouter", model: "deepseek/deepseek-v4-pro-0813" }
 
-function makeEvent(overrides: Partial<ContextEvent> = {}): ContextEvent {
+function event(model: ChoiceConfig = ROUTED, options: Record<string, unknown> = {}): ContextEvent {
     return {
         sessionID: "ses_test",
-        model: { providerID: "openrouter", id: "deepseek/deepseek-v4.1-flash" },
-        options: {},
-        ...overrides,
+        model: { providerID: model.provider, id: model.model },
+        options,
     }
 }
 
-async function harness(overrides: Partial<ContextEvent> = {}, stored = true) {
-    const storage = new FakeStorage()
-
-    if (stored) {
-        storage.map.set("jev/decision/ses_test", makeStoredDecision())
-    }
-
-    const onContext = createEffortHook({
-        config,
-        logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
-        storage,
-    })
-
-    const event = makeEvent(overrides)
-    await onContext(event)
-    return event
+async function hook(
+    config: PluginConfig = {},
+    resolved: ChoiceConfig | undefined = ROUTED,
+    storage: JsonStorage = new FakeStorage(),
+) {
+    await saveDecision(storage, makeStoredDecision("ses_test", { resolved }))
+    return createEffortHook({ config: normalizeConfig(config), logger: noopLogger, storage })
 }
 
 describe("effort hook", () => {
-    test("applies reasoning_effort for openrouter", async () => {
-        const event = await harness()
-        expect(event.options.reasoning_effort).toBe("high")
+    test("sets the OpenRouter option on the routed model", async () => {
+        const onContext = await hook()
+        const call = event()
+
+        await onContext(call)
+
+        expect(call.options).toEqual({ reasoning_effort: "high" })
     })
 
-    test("applies reasoningEffort for openai", async () => {
-        const event = await harness({
-            model: { providerID: "openai", id: "gpt-5.2" },
-        })
-        expect(event.options.reasoningEffort).toBe("high")
+    test("uses the OpenAI option key for OpenAI models", async () => {
+        const openai = { provider: "openai", model: "gpt-5.2" }
+        const onContext = await hook({}, openai)
+        const call = event(openai)
+
+        await onContext(call)
+
+        expect(call.options).toEqual({ reasoningEffort: "high" })
     })
 
-    test("leaves unknown providers untouched", async () => {
-        const event = await harness({
-            model: { providerID: "anthropic", id: "claude-x" },
-        })
-        expect(Object.keys(event.options)).toHaveLength(0)
+    test("maps effort values", async () => {
+        const onContext = await hook({ reasoningEffort: { values: { high: "xhigh" } } })
+        const call = event()
+
+        await onContext(call)
+
+        expect(call.options).toEqual({ reasoning_effort: "xhigh" })
     })
 
-    test("leaves requests untouched without a stored decision", async () => {
-        const event = await harness({}, false)
-        expect(Object.keys(event.options)).toHaveLength(0)
+    test("ignores providers without an option key", async () => {
+        const anthropic = { provider: "anthropic", model: "claude-builder" }
+        const onContext = await hook({}, anthropic)
+        const call = event(anthropic)
+
+        await onContext(call)
+
+        expect(call.options).toEqual({})
     })
 
-    test("maps effort choices through configured values", async () => {
-        const mappedConfig = normalizeConfig({
-            reasoningEffort: { values: { high: "xhigh" } },
-        })
+    test("ignores providers disabled with an empty option key", async () => {
+        const onContext = await hook({ reasoningEffort: { providers: { openrouter: "" } } })
+        const call = event()
 
-        const storage = new FakeStorage()
-        storage.map.set("jev/decision/ses_test", makeStoredDecision())
+        await onContext(call)
 
+        expect(call.options).toEqual({})
+    })
+
+    test("does nothing without a stored decision", async () => {
         const onContext = createEffortHook({
-            config: mappedConfig,
-            logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
+            config: normalizeConfig({}),
+            logger: noopLogger,
+            storage: new FakeStorage(),
+        })
+        const call = event()
+
+        await onContext(call)
+
+        expect(call.options).toEqual({})
+    })
+
+    test("does nothing when the call's model is not the routed model", async () => {
+        const onContext = await hook()
+        const call = event({ provider: "openrouter", model: "z-ai/glm-5.3-flash" })
+
+        await onContext(call)
+
+        expect(call.options).toEqual({})
+    })
+
+    test("does nothing when the router kept the session model", async () => {
+        const storage = new FakeStorage()
+        await saveDecision(storage, makeStoredDecision("ses_test", { resolved: undefined }))
+        const onContext = createEffortHook({
+            config: normalizeConfig({}),
+            logger: noopLogger,
             storage,
         })
+        const call = event()
 
-        const event = makeEvent()
-        await onContext(event)
-        expect(event.options.reasoning_effort).toBe("xhigh")
+        await onContext(call)
+
+        expect(call.options).toEqual({})
     })
 
-    test("can opt a provider out with an empty key", async () => {
-        const optedOut = normalizeConfig({
-            reasoningEffort: { providers: { openrouter: "" } },
-        })
+    test("keeps a value set by an earlier hook", async () => {
+        const onContext = await hook()
+        const call = event(ROUTED, { reasoning_effort: "low" })
 
-        const storage = new FakeStorage()
-        storage.map.set("jev/decision/ses_test", makeStoredDecision())
+        await onContext(call)
+
+        expect(call.options).toEqual({ reasoning_effort: "low" })
+    })
+
+    test("does not apply a stale decision after a skipped prompt", async () => {
+        const harness = createRouterHarness({})
+        await harness.prompt(makePromptEvent())
+
+        await harness.prompt(makePromptEvent({ text: "hi" }))
 
         const onContext = createEffortHook({
-            config: optedOut,
-            logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
-            storage,
+            config: normalizeConfig({}),
+            logger: noopLogger,
+            storage: harness.storage,
+        })
+        const call = event()
+
+        await onContext(call)
+
+        expect(call.options).toEqual({})
+    })
+
+    test("never throws when storage fails", async () => {
+        const onContext = createEffortHook({
+            config: normalizeConfig({}),
+            logger: noopLogger,
+            storage: {
+                get: async () => {
+                    throw new Error("storage down")
+                },
+                set: async () => {},
+            },
         })
 
-        const event = makeEvent()
-        await onContext(event)
-        expect(Object.keys(event.options)).toHaveLength(0)
+        await expect(onContext(event())).resolves.toBeUndefined()
+    })
+})
+
+describe("effortProviders", () => {
+    test("lists providers with a non-empty option key", () => {
+        expect(effortProviders(normalizeConfig({}))).toEqual(["openrouter", "openai"])
+        expect(
+            effortProviders(
+                normalizeConfig({ reasoningEffort: { providers: { openai: "", xai: "effort" } } }),
+            ),
+        ).toEqual(["openrouter", "xai"])
     })
 })
