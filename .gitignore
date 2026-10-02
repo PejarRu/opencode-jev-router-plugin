@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+*.log
+.DS_Store
+# upstream reference copy, not part of this repository
+example/
+# local agent plans (this plan lives here), not published
+.opencode/plans/

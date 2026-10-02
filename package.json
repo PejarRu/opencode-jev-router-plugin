@@ -1,0 +1,77 @@
+{
+  "name": "opencode-jev-router-plugin",
+  "version": "0.0.0",
+  "description": "OpenCode v2 plugin that routes each prompt to the cheapest capable model using the JEV classifier.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "llm",
+    "model-routing",
+    "openrouter",
+    "jev"
+  ],
+  "license": "MIT",
+  "author": "emmdim",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emmdim/opencode-jev-router-plugin.git"
+  },
+  "homepage": "https://github.com/emmdim/opencode-jev-router-plugin#readme",
+  "bugs": "https://github.com/emmdim/opencode-jev-router-plugin/issues",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "peerDependencies": {
+    "@opencode/plugin": ">=2.0.0 <3"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "bun test",
+    "check:package": "publint && attw --pack . --profile esm-only",
+    "smoke": "bash scripts/smoke-pack.sh",
+    "prepack": "npm run clean && npm run build",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@opencode/plugin": "2.0.22",
+    "@biomejs/biome": "^2.5.15",
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
+    "@types/bun": "^1.4.2",
+    "@types/node": "^26.6.4",
+    "publint": "^0.3.25",
+    "typescript": "^5.9"
+  }
+}
