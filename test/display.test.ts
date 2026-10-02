@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { describeDecision, formatDecisionBlock } from "../src/display.ts"
+import {
+    describeDecision,
+    describeStatus,
+    formatDecisionBlock,
+    formatStatus,
+} from "../src/display.ts"
 import { makeDecisionFixture } from "./support/fixtures.ts"
+import { makeStoredDecision } from "./support/harness.ts"
 
 const resolved = { provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" }
 const fixture = makeDecisionFixture()
@@ -80,5 +86,39 @@ describe("formatDecisionBlock", () => {
         expect(text).not.toContain("task_scope:")
         expect(text).not.toContain("ambiguity:")
         expect(text).not.toContain("decision_id:")
+    })
+})
+
+describe("status", () => {
+    const usage = { cost: 0.0000048, inputTokens: 2400, outputTokens: 192, requests: 2 }
+
+    test("summarizes usage and the last decision", () => {
+        const text = formatStatus(makeStoredDecision(), usage)
+
+        expect(text).toStartWith("[JEV ROUTER STATUS]")
+        expect(text).toContain("requests: 2")
+        expect(text).toContain("input_tokens: 2400")
+        expect(text).toContain("cost_usd: 0.00000480")
+        expect(text).toContain("last_model: openrouter/deepseek/deepseek-v4-pro-0813")
+        expect(text).toContain("model_tier: powerful (93%)")
+    })
+
+    test("reports a kept session model", () => {
+        const text = formatStatus(makeStoredDecision("ses_test", { resolved: undefined }), usage)
+
+        expect(text).toContain("last_model: session model kept")
+    })
+
+    test("reports a session without decisions", () => {
+        const empty = { cost: 0, inputTokens: 0, outputTokens: 0, requests: 0 }
+
+        expect(formatStatus(undefined, empty)).toContain("last_decision: none")
+        expect(describeStatus(undefined, empty)).toBe("⚡ jev: 0 classifier calls · $0.00000000")
+    })
+
+    test("renders a one-line description", () => {
+        expect(describeStatus(makeStoredDecision(), usage)).toBe(
+            "⚡ jev: 2 classifier calls · $0.00000480 · last → openrouter/deepseek/deepseek-v4-pro-0813",
+        )
     })
 })

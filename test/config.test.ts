@@ -174,4 +174,13 @@ describe("normalizeConfig validation", () => {
         expect(load({ logging: true }).config.logLevel).toBe("info")
         expect(load({ logging: false, logLevel: "debug" }).config.logLevel).toBe("debug")
     })
+
+    test("forces /jev into ignoredPrefixes when the command is enabled", () => {
+        const enabled = load({ statusCommand: true, ignoredPrefixes: ["/help"] }).config
+        expect(enabled.ignoredPrefixes).toContain("/help")
+        expect(enabled.ignoredPrefixes).toContain("/jev")
+
+        const disabled = load({ statusCommand: false, ignoredPrefixes: ["/help"] }).config
+        expect(disabled.ignoredPrefixes).toEqual(["/help"])
+    })
 })

@@ -247,7 +247,7 @@ export function normalizeConfig(options: unknown, warn: Warn = () => {}): Runtim
     const effort = section("reasoningEffort", options.reasoningEffort, warn)
     const nonNegative = integerAtLeast(0)
 
-    return {
+    const resolved: RuntimeConfig = {
         enabled: pick("enabled", options.enabled, base.enabled, isBoolean, "a boolean", warn),
         router: choice("router", options.router, base.router, warn),
         cheap: choice("cheap", options.cheap, base.cheap, warn),
@@ -370,4 +370,10 @@ export function normalizeConfig(options: unknown, warn: Warn = () => {}): Runtim
             warn,
         ),
     }
+
+    if (resolved.statusCommand && !resolved.ignoredPrefixes.includes("/jev")) {
+        resolved.ignoredPrefixes = [...resolved.ignoredPrefixes, "/jev"]
+    }
+
+    return resolved
 }

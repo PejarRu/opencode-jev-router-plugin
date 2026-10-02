@@ -1,15 +1,17 @@
 import type { Plugin } from "@opencode/plugin"
 import { authFileSource, envSource, integrationSource, resolveApiKey } from "./auth.ts"
+import { createStatusCommand } from "./command.ts"
 import { normalizeConfig } from "./config.ts"
-import { createEffortHook } from "./effort.ts"
+import { createEffortHook, effortProviders } from "./effort.ts"
 import { initLogger } from "./logger.ts"
 import { createPromptRouter } from "./router.ts"
+
+export type { PluginConfig } from "./config.ts"
 
 const PLUGIN_ID = "opencode-jev-router-plugin"
 
 const plugin: Plugin.Plugin = {
     id: PLUGIN_ID,
-
     async setup(ctx) {
         const warnings: string[] = []
         const config = normalizeConfig(ctx.options, (message) => warnings.push(message))
@@ -19,7 +21,7 @@ const plugin: Plugin.Plugin = {
         }
 
         if (!config.enabled) {
-            logger.info("plugin disabled")
+            logger.info("disabled by configuration")
             return
         }
 
@@ -29,9 +31,7 @@ const plugin: Plugin.Plugin = {
             storage: ctx.storage,
             session: ctx.session,
             getRouterBaseUrl: async () => {
-                const provider = await ctx.provider.get({
-                    providerID: config.router.provider,
-                })
+                const provider = await ctx.provider.get({ providerID: config.router.provider })
                 return provider?.data?.settings?.baseURL
             },
             getRouterApiKey: async () => {
@@ -51,24 +51,39 @@ const plugin: Plugin.Plugin = {
             listSkills: async () => (await ctx.skill.list()).data ?? [],
             repository: ctx.location.project?.canonical,
             modelAvailable: async (providerID, modelID) => {
-                const models = await ctx.model.list()
-                return models.data.some(
+                const models = (await ctx.model.list()).data ?? []
+                return models.some(
                     (model) => model.providerID === providerID && model.modelID === modelID,
                 )
             },
             fetchImpl: fetch,
         })
-
         const onContext = createEffortHook({ config, logger, storage: ctx.storage })
 
-        const promptHook = await ctx.session.hook("prompt", onPrompt)
-        const contextHook = await ctx.session.hook("context", onContext)
+        const registrations: Array<Awaited<ReturnType<typeof ctx.session.hook>>> = []
 
-        logger.debug("hooks registered")
+        try {
+            registrations.push(await ctx.session.hook("prompt", onPrompt))
+            for (const providerID of effortProviders(config)) {
+                registrations.push(await ctx.session.hook("context", onContext, { providerID }))
+            }
+            if (config.statusCommand) {
+                const command = createStatusCommand({
+                    storage: ctx.storage,
+                    session: ctx.session,
+                    logger,
+                })
+                registrations.push(await ctx.command.transform((editor) => editor.add(command)))
+            }
+        } catch (error) {
+            await Promise.allSettled(registrations.map((registration) => registration.dispose()))
+            throw error
+        }
+
+        logger.info("enabled; router", `${config.router.provider}/${config.router.model}`)
 
         return async () => {
-            await promptHook.dispose()
-            await contextHook.dispose()
+            await Promise.allSettled(registrations.map((registration) => registration.dispose()))
         }
     },
 }

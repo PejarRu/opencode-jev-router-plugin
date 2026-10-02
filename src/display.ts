@@ -1,6 +1,7 @@
 import type { ChoiceConfig } from "./config.ts"
-import type { TierPick } from "./decision.ts"
+import type { StoredDecision, TierPick } from "./decision.ts"
 import type { JevRoutingResponse, RoutingConversation } from "./jev.ts"
+import type { JevUsageStats } from "./usage.ts"
 
 function percent(confidence: number | undefined): string {
     return confidence === undefined ? "?" : `${Math.round(confidence * 100)}%`
@@ -155,5 +156,49 @@ export function formatDecisionBlock({
 
     lines.push(...summary)
 
+    return lines.join("\n")
+}
+
+function plural(count: number, noun: string): string {
+    return `${count} ${noun}${count === 1 ? "" : "s"}`
+}
+
+/** One-line status for the TUI. */
+export function describeStatus(decision: StoredDecision | undefined, usage: JevUsageStats): string {
+    const parts = [plural(usage.requests, "classifier call"), `$${usage.cost.toFixed(8)}`]
+    if (decision?.resolved) {
+        parts.push(`last → ${decision.resolved.provider}/${decision.resolved.model}`)
+    }
+    return `⚡ jev: ${parts.join(" · ")}`
+}
+
+/** Machine-readable status block, same `key: value` style as the decision block. */
+export function formatStatus(decision: StoredDecision | undefined, usage: JevUsageStats): string {
+    const lines = [
+        "[JEV ROUTER STATUS]",
+        `requests: ${usage.requests}`,
+        `input_tokens: ${usage.inputTokens}`,
+        `output_tokens: ${usage.outputTokens}`,
+        `cost_usd: ${usage.cost.toFixed(8)}`,
+    ]
+
+    if (!decision) {
+        lines.push("last_decision: none")
+        return lines.join("\n")
+    }
+
+    const model = decision.resolved
+        ? `${decision.resolved.provider}/${decision.resolved.model}`
+        : "session model kept"
+    lines.push(
+        `last_message: ${decision.messageID}`,
+        `last_decided_at: ${new Date(decision.createdAt).toISOString()}`,
+        `last_model: ${model}`,
+    )
+    for (const [question, answer] of Object.entries(decision.response.answers)) {
+        if (answer) {
+            lines.push(`${question}: ${answer.choice} (${Math.round(answer.confidence * 100)}%)`)
+        }
+    }
     return lines.join("\n")
 }
