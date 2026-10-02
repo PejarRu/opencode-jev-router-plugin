@@ -50,7 +50,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && sed -i -E 's/(from \"\\.[^\"]*)\\.ts\"/\\1.js\"/g' dist/*.d.ts",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
@@ -65,12 +65,12 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
-    "@opencode/plugin": "2.0.22",
     "@biomejs/biome": "^2.5.15",
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
+    "@opencode/plugin": "2.0.22",
     "@types/bun": "^1.4.2",
-    "@types/node": "^26.6.4",
+    "@types/node": "^20",
     "publint": "^0.3.25",
     "typescript": "^5.9"
   }
